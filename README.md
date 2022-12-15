@@ -116,7 +116,7 @@ Gesture handlers can sometimes capture a gesture unintentionally. If you are usi
 [https://snack.expo.io/@computerjazz/swipeable-item](https://snack.expo.io/@computerjazz/swipeable-item)
 
 ```typescript
-import React, { useCallback } from "react";
+import { useCallback } from "react";
 import {
   Text,
   View,

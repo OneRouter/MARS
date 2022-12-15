@@ -1,4 +1,4 @@
-import React, {
+import {
   forwardRef,
   ForwardedRef,
   ReactElement,
@@ -26,6 +26,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { styles } from "./styles";
 import { isRTL, isWeb, renderNull, MAX_Z_INDEX, OpenDirection } from "./shared";
+import { UnderlayContext, OverlayContext } from "./context";
 import {
   OpenDirectionType,
   UnderlayParams,
@@ -35,13 +36,6 @@ import {
   SwipeableProps,
   SwipeableImperativeRef,
 } from "./types";
-
-export const UnderlayContext = React.createContext<
-  UnderlayParams<unknown> | undefined
->(undefined);
-export const OverlayContext = React.createContext<
-  OverlayParams<unknown> | undefined
->(undefined);
 
 function Swipeable<T>(
   props: SwipeableProps<T>,
@@ -430,9 +424,10 @@ function Swipeable<T>(
   );
 }
 
-// export * from "./hooks";
-// export * from "./shared"
-// export * from "./types";
+export * from "./context";
+export * from "./hooks";
+export * from "./shared";
+export * from "./types";
 
 export default forwardRef(Swipeable) as <T>(
   props: SwipeableProps<T> & {
