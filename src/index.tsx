@@ -1,13 +1,18 @@
 import React, {
+  forwardRef,
   ForwardedRef,
-  useCallback,
-  useContext,
+  ReactElement,
   useImperativeHandle,
   useMemo,
   useState,
 } from "react";
-import { Platform, StyleSheet } from "react-native";
-import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import {
+  Gesture,
+  GestureDetector,
+  GestureStateChangeEvent,
+  GestureUpdateEvent,
+  PanGestureHandlerEventPayload,
+} from "react-native-gesture-handler";
 import Animated, {
   runOnJS,
   useAnimatedStyle,
@@ -19,95 +24,38 @@ import Animated, {
   WithSpringConfig,
   useAnimatedProps,
 } from "react-native-reanimated";
+import { styles } from "./styles";
+import { isRTL, isWeb, renderNull, MAX_Z_INDEX, OpenDirection } from "./shared";
+import {
+  OpenDirectionType,
+  UnderlayParams,
+  OverlayParams,
+  ClosePromiseFn,
+  OpenPromiseFn,
+  SwipeableProps,
+  SwipeableImperativeRef,
+} from "./types";
 
-const isWeb = Platform.OS === "web";
-
-export enum OpenDirection {
-  LEFT = "left",
-  RIGHT = "right",
-  NONE = "none",
-}
-
-const renderNull = () => null;
-
-const MAX_Z_INDEX = 100;
-
-type OpenCloseOptions = { animated?: boolean };
-type OpenPromiseFn = (
-  snapPoint?: number,
-  options?: OpenCloseOptions
-) => Promise<void>;
-type ClosePromiseFn = (options?: OpenCloseOptions) => Promise<void>;
-
-export type UnderlayParams<T> = {
-  item: T;
-  open: OpenPromiseFn;
-  close: ClosePromiseFn;
-  percentOpen: Animated.DerivedValue<number>;
-  isGestureActive: Animated.DerivedValue<boolean>;
-  direction: OpenDirection;
-};
-
-export type OverlayParams<T> = {
-  item: T;
-  openLeft: OpenPromiseFn;
-  openRight: OpenPromiseFn;
-  close: ClosePromiseFn;
-  openDirection: OpenDirection;
-  percentOpenLeft: Animated.DerivedValue<number>;
-  percentOpenRight: Animated.DerivedValue<number>;
-};
-
-const UnderlayContext = React.createContext<
+export const UnderlayContext = React.createContext<
   UnderlayParams<unknown> | undefined
 >(undefined);
-const OverlayContext = React.createContext<OverlayParams<unknown> | undefined>(
-  undefined
-);
+export const OverlayContext = React.createContext<
+  OverlayParams<unknown> | undefined
+>(undefined);
 
-export type RenderUnderlay<T> = (params: UnderlayParams<T>) => React.ReactNode;
-export type RenderOverlay<T> = (params: OverlayParams<T>) => React.ReactNode;
-
-type Props<T> = {
-  item: T;
-  children?: React.ReactNode;
-  renderOverlay?: RenderOverlay<T>;
-  renderUnderlayLeft?: RenderUnderlay<T>;
-  renderUnderlayRight?: RenderUnderlay<T>;
-  onChange?: (params: {
-    openDirection: OpenDirection;
-    snapPoint: number;
-  }) => void;
-  overSwipe?: number;
-  animationConfig?: Partial<WithSpringConfig>;
-  activationThreshold?: number;
-  swipeEnabled?: boolean;
-  snapPointsLeft?: number[];
-  snapPointsRight?: number[];
-  swipeDamping?: number;
-};
-
-export type SwipeableItemImperativeRef = {
-  open: (
-    openDirection: OpenDirection,
-    snapPoint?: number,
-    options?: OpenCloseOptions
-  ) => Promise<void>;
-  close: ClosePromiseFn;
-};
-
-function SwipeableItem<T>(
-  props: Props<T>,
-  ref: ForwardedRef<SwipeableItemImperativeRef>
+function Swipeable<T>(
+  props: SwipeableProps<T>,
+  ref: ForwardedRef<SwipeableImperativeRef>
 ) {
   const {
     item,
+    vertical,
     children,
     renderOverlay = renderNull,
-    renderUnderlayLeft = renderNull,
-    renderUnderlayRight = renderNull,
-    snapPointsLeft = [],
-    snapPointsRight = [],
+    renderUnderlayNext = renderNull,
+    renderUnderlayPrevious = renderNull,
+    snapPointsNext = [],
+    snapPointsPrevious = [],
     swipeEnabled,
     activationThreshold = 20,
     overSwipe = 20,
@@ -131,81 +79,85 @@ function SwipeableItem<T>(
   const animStatePos = useSharedValue(0);
   const isGestureActive = useSharedValue(false);
 
-  const swipingLeft = useDerivedValue(
-    () => animStatePos.value < 0,
-    [animStatePos]
+  const swipingNext = useDerivedValue(
+    () => (isRTL ? animStatePos.value > 0 : animStatePos.value < 0),
+    [animStatePos, isRTL]
   );
-  const swipingRight = useDerivedValue(
-    () => animStatePos.value > 0,
-    [animStatePos]
+  const swipingPrevious = useDerivedValue(
+    () => (isRTL ? animStatePos.value < 0 : animStatePos.value > 0),
+    [animStatePos, isRTL]
   );
 
-  const maxSnapPointLeft =
-    -1 * Math.max(...(snapPointsLeft.length ? snapPointsLeft : [0]));
-  const maxSnapPointRight = Math.max(
-    ...(snapPointsRight.length ? snapPointsRight : [0])
+  const maxSnapPointNext =
+    -1 * Math.max(...(snapPointsNext.length ? snapPointsNext : [0]));
+  const maxSnapPointPrevious = Math.max(
+    ...(snapPointsPrevious.length ? snapPointsPrevious : [0])
   );
 
   // Only include overswipe if the max snap point is greater than zero
-  const maxTranslateLeft =
-    maxSnapPointLeft - (maxSnapPointLeft ? overSwipe : 0);
-  const maxTranslateRight =
-    maxSnapPointRight + (maxSnapPointRight ? overSwipe : 0);
+  const maxTranslateNext =
+    maxSnapPointNext - (maxSnapPointNext ? overSwipe : 0);
+  const maxTranslatePrevious =
+    maxSnapPointPrevious + (maxSnapPointPrevious ? overSwipe : 0);
 
-  const percentOpenLeft = useDerivedValue(() => {
-    return swipingLeft.value && maxSnapPointLeft
-      ? Math.abs(animStatePos.value / maxSnapPointLeft)
+  const percentOpenNext = useDerivedValue(() => {
+    return swipingNext.value && maxSnapPointNext
+      ? Math.abs(animStatePos.value / maxSnapPointNext)
       : 0;
-  }, [maxSnapPointLeft]);
-  const percentOpenRight = useDerivedValue(() => {
-    return swipingRight.value && maxSnapPointRight
-      ? Math.abs(animStatePos.value / maxSnapPointRight)
+  }, [maxSnapPointNext]);
+  const percentOpenPrevious = useDerivedValue(() => {
+    return swipingPrevious.value && maxSnapPointPrevious
+      ? Math.abs(animStatePos.value / maxSnapPointPrevious)
       : 0;
-  }, [maxSnapPointRight]);
+  }, [maxSnapPointPrevious]);
 
-  const hasLeft = !!snapPointsLeft?.length;
-  const hasRight = !!snapPointsRight?.length;
+  const hasNext = !!snapPointsNext?.length;
+  const hasPrevious = !!snapPointsPrevious?.length;
 
-  const activeOffsetL =
-    hasLeft || openDirection === OpenDirection.RIGHT
+  const activeOffsetNext =
+    hasNext || openDirection === OpenDirection.PREVIOUS
       ? -activationThreshold
       : -Number.MAX_VALUE;
-  const activeOffsetR =
-    hasRight || openDirection === OpenDirection.LEFT
+  const activeOffsetPrevious =
+    hasPrevious || openDirection === OpenDirection.NEXT
       ? activationThreshold
       : Number.MAX_VALUE;
-  const activeOffsetX = [activeOffsetL, activeOffsetR];
+  const activeOffsetPrimaryAxis = [activeOffsetNext, activeOffsetPrevious];
 
-  const leftStyle = useAnimatedStyle(() => {
-    const opacity = percentOpenLeft.value > 0 ? 1 : 0;
+  const nextStyle = useAnimatedStyle(() => {
+    const opacity = percentOpenNext.value > 0 ? 1 : 0;
     const zIndex = Math.floor(
-      Math.min(percentOpenLeft.value * MAX_Z_INDEX, MAX_Z_INDEX - 1)
+      Math.min(percentOpenNext.value * MAX_Z_INDEX, MAX_Z_INDEX - 1)
     );
 
     return isWeb ? { opacity, zIndex } : { opacity };
   }, []);
-  const rightStyle = useAnimatedStyle(() => {
-    const opacity = percentOpenRight.value > 0 ? 1 : 0;
+  const previousStyle = useAnimatedStyle(() => {
+    const opacity = percentOpenPrevious.value > 0 ? 1 : 0;
     const zIndex = Math.floor(
-      Math.min(percentOpenRight.value * MAX_Z_INDEX, MAX_Z_INDEX - 1)
+      Math.min(percentOpenPrevious.value * MAX_Z_INDEX, MAX_Z_INDEX - 1)
     );
 
     return isWeb ? { opacity, zIndex } : { opacity };
   }, []);
   const overlayStyle = useAnimatedStyle(() => {
-    const transform = [{ translateX: animStatePos.value }];
+    const transform = [
+      vertical
+        ? { translateY: animStatePos.value }
+        : { translateX: animStatePos.value },
+    ];
     const zIndex = MAX_Z_INDEX;
 
     return isWeb ? { transform, zIndex } : { transform };
   }, [animStatePos]);
 
-  const openLeft: OpenPromiseFn = (snapPoint, options) => {
-    const toValue = snapPoint ?? maxSnapPointLeft;
+  const openNext: OpenPromiseFn = (snapPoint, options) => {
+    const toValue = snapPoint ?? maxSnapPointNext;
 
     return new Promise<void>((resolve) => {
       function resolvePromiseIfFinished(isFinished: boolean) {
         if (isFinished) resolve();
-        onAnimationEnd(OpenDirection.LEFT, toValue);
+        onAnimationEnd(OpenDirection.NEXT, toValue);
       }
 
       if (options?.animated === false) {
@@ -221,13 +173,13 @@ function SwipeableItem<T>(
     });
   };
 
-  const openRight: OpenPromiseFn = (snapPoint, options) => {
-    const toValue = snapPoint ?? maxSnapPointRight;
+  const openPrevious: OpenPromiseFn = (snapPoint, options) => {
+    const toValue = snapPoint ?? maxSnapPointPrevious;
 
     return new Promise<void>((resolve) => {
       function resolvePromiseIfFinished(isFinished: boolean) {
         if (isFinished) resolve();
-        onAnimationEnd(OpenDirection.RIGHT, toValue);
+        onAnimationEnd(OpenDirection.PREVIOUS, toValue);
       }
 
       if (options?.animated === false) {
@@ -265,12 +217,12 @@ function SwipeableItem<T>(
   };
 
   useImperativeHandle(ref, () => {
-    const refObject: SwipeableItemImperativeRef = {
+    const refObject: SwipeableImperativeRef = {
       open: (openDirection, snapPoint, options) => {
-        if (openDirection === OpenDirection.LEFT)
-          return openLeft(snapPoint, options);
-        if (openDirection === OpenDirection.RIGHT)
-          return openRight(snapPoint, options);
+        if (openDirection === OpenDirection.NEXT)
+          return openNext(snapPoint, options);
+        if (openDirection === OpenDirection.PREVIOUS)
+          return openPrevious(snapPoint, options);
         return close();
       },
       close,
@@ -278,7 +230,10 @@ function SwipeableItem<T>(
     return refObject;
   });
 
-  function onAnimationEnd(_openDirection: OpenDirection, snapPoint: number) {
+  function onAnimationEnd(
+    _openDirection: OpenDirectionType,
+    snapPoint: number
+  ) {
     setOpenDirection(_openDirection);
     const didChange =
       openDirection !== OpenDirection.NONE ||
@@ -288,73 +243,87 @@ function SwipeableItem<T>(
     }
   }
 
-  const startX = useSharedValue(0);
-
-  const gesture = Gesture.Pan()
-    .onBegin(() => {
-      if (isWeb) {
-        // onStart not called on web
-        // remove when fixed: https://github.com/software-mansion/react-native-gesture-handler/issues/2057
-        startX.value = animStatePos.value;
-        isGestureActive.value = true;
-      }
-    })
-    .onStart(() => {
-      startX.value = animStatePos.value;
+  const startPrimaryAxis = useSharedValue(0);
+  const onBegin = () => {
+    if (isWeb) {
+      // onStart not called on web
+      // remove when fixed: https://github.com/software-mansion/react-native-gesture-handler/issues/2057
+      startPrimaryAxis.value = animStatePos.value;
       isGestureActive.value = true;
-    })
-    .onUpdate((evt) => {
-      const rawVal = evt.translationX + startX.value;
-      const clampedVal = interpolate(
-        rawVal,
-        [maxTranslateLeft, maxTranslateRight],
-        [maxTranslateLeft, maxTranslateRight],
-        Extrapolate.CLAMP
+    }
+  };
+  const onStart = () => {
+    if (!isWeb) {
+      // onStart not called on web
+      // remove onBegin when fixed: https://github.com/software-mansion/react-native-gesture-handler/issues/2057
+      startPrimaryAxis.value = animStatePos.value;
+      isGestureActive.value = true;
+    }
+  };
+  const onUpdate = (evt: GestureUpdateEvent<PanGestureHandlerEventPayload>) => {
+    const rawVal =
+      (vertical ? evt.translationY : evt.translationX) + startPrimaryAxis.value;
+    const clampedVal = interpolate(
+      rawVal,
+      [maxTranslateNext, maxTranslatePrevious],
+      [maxTranslateNext, maxTranslatePrevious],
+      Extrapolate.CLAMP
+    );
+    animStatePos.value = clampedVal;
+  };
+  const onEnd = (
+    evt: GestureStateChangeEvent<PanGestureHandlerEventPayload>
+  ) => {
+    isGestureActive.value = false;
+
+    // Approximate where item would end up with velocity taken into account
+    const velocityModifiedPosition =
+      animStatePos.value +
+      (vertical ? evt.velocityY : evt.velocityX) / swipeDamping;
+
+    const allSnapPoints = snapPointsNext
+      .map((p) => p * -1)
+      .concat(snapPointsPrevious);
+
+    // The user is not required to designate [0] in their snap point array,
+    // but we need to make sure 0 is a snap point.
+
+    allSnapPoints.push(0);
+
+    const closestSnapPoint = allSnapPoints.reduce((acc, cur) => {
+      const diff = Math.abs(velocityModifiedPosition - cur);
+      const prevDiff = Math.abs(velocityModifiedPosition - acc);
+      return diff < prevDiff ? cur : acc;
+    }, Infinity);
+
+    const onComplete = () => {
+      "worklet";
+      const openDirection =
+        closestSnapPoint === 0
+          ? OpenDirection.NONE
+          : closestSnapPoint > 0
+          ? OpenDirection.PREVIOUS
+          : OpenDirection.NEXT;
+      runOnJS(onAnimationEnd)(openDirection, Math.abs(closestSnapPoint));
+    };
+    if (animStatePos.value === closestSnapPoint) onComplete();
+    else
+      animStatePos.value = withSpring(
+        closestSnapPoint,
+        springConfig,
+        onComplete
       );
-      animStatePos.value = clampedVal;
-    })
-    .onEnd((evt) => {
-      isGestureActive.value = false;
+  };
+  const gesture = Gesture.Pan()
+    .onBegin(onBegin)
+    .onStart(onStart)
+    .onUpdate(onUpdate)
+    .onEnd(onEnd)
+    .enabled(swipeEnabled !== false);
 
-      // Approximate where item would end up with velocity taken into account
-      const velocityModifiedPosition =
-        animStatePos.value + evt.velocityX / swipeDamping;
-
-      const allSnapPoints = snapPointsLeft
-        .map((p) => p * -1)
-        .concat(snapPointsRight);
-
-      // The user is not required to designate [0] in their snap point array,
-      // but we need to make sure 0 is a snap point.
-
-      allSnapPoints.push(0);
-
-      const closestSnapPoint = allSnapPoints.reduce((acc, cur) => {
-        const diff = Math.abs(velocityModifiedPosition - cur);
-        const prevDiff = Math.abs(velocityModifiedPosition - acc);
-        return diff < prevDiff ? cur : acc;
-      }, Infinity);
-
-      const onComplete = () => {
-        "worklet";
-        const openDirection =
-          closestSnapPoint === 0
-            ? OpenDirection.NONE
-            : closestSnapPoint > 0
-            ? OpenDirection.RIGHT
-            : OpenDirection.LEFT;
-        runOnJS(onAnimationEnd)(openDirection, Math.abs(closestSnapPoint));
-      };
-      if (animStatePos.value === closestSnapPoint) onComplete();
-      else
-        animStatePos.value = withSpring(
-          closestSnapPoint,
-          springConfig,
-          onComplete
-        );
-    })
-    .enabled(swipeEnabled !== false)
-    .activeOffsetX(activeOffsetX);
+  vertical
+    ? gesture.activeOffsetY(activeOffsetPrimaryAxis)
+    : gesture.activeOffsetX(activeOffsetPrimaryAxis);
 
   const sharedParams = useMemo(
     () => ({
@@ -365,87 +334,91 @@ function SwipeableItem<T>(
     []
   );
 
-  const underlayRightParams = useMemo(() => {
+  const underlayPreviousParams = useMemo(() => {
     return {
-      open: openRight,
-      percentOpen: percentOpenRight,
-      direction: OpenDirection.RIGHT,
+      open: openPrevious,
+      percentOpen: percentOpenPrevious,
+      direction: OpenDirection.PREVIOUS,
       ...sharedParams,
     };
-  }, [percentOpenRight, openRight, sharedParams]);
+  }, [percentOpenPrevious, openPrevious, sharedParams]);
 
-  const underlayLeftParams = useMemo(() => {
+  const underlayNextParams = useMemo(() => {
     return {
-      open: openLeft,
-      percentOpen: percentOpenLeft,
-      direction: OpenDirection.LEFT,
+      open: openNext,
+      percentOpen: percentOpenNext,
+      direction: OpenDirection.NEXT,
       ...sharedParams,
     };
-  }, [item, percentOpenLeft, openLeft, sharedParams]);
+  }, [item, percentOpenNext, openNext, sharedParams]);
 
   const overlayParams = useMemo(() => {
     // If there is only one swipe direction, use it as the 'open' function. Otherwise we need to choose one.
     const open =
-      hasLeft && !hasRight
-        ? openLeft
-        : hasRight && !hasLeft
-        ? openRight
-        : openLeft;
+      hasNext && !hasPrevious
+        ? openNext
+        : hasPrevious && !hasNext
+        ? openPrevious
+        : openNext;
 
     return {
-      openLeft: openLeft,
-      openRight: openRight,
-      percentOpenLeft,
-      percentOpenRight,
+      openNext: openNext,
+      openPrevious: openPrevious,
+      percentOpenNext,
+      percentOpenPrevious,
       openDirection,
       open,
       ...sharedParams,
     };
   }, [
-    openLeft,
-    openRight,
+    openNext,
+    openPrevious,
     openDirection,
-    percentOpenLeft,
-    percentOpenRight,
-    hasLeft,
-    hasRight,
+    percentOpenNext,
+    percentOpenPrevious,
+    hasNext,
+    hasPrevious,
   ]);
 
-  const animPropsLeft = useAnimatedProps(() => {
+  const animPropsNext = useAnimatedProps(() => {
     // useAnimatedProps broken on web: https://github.com/software-mansion/react-native-reanimated/issues/1808
-    if (isWeb) return { pointerEvents: "auto" as const };
+    // update: shouldn't be necessary anymore: https://github.com/software-mansion/react-native-reanimated/pull/1819
+    // if (isWeb) return { pointerEvents: "auto" as const };
     return {
       pointerEvents:
-        percentOpenLeft.value > 0 ? ("auto" as const) : ("none" as const),
+        percentOpenNext.value > 0 ? ("auto" as const) : ("none" as const),
     };
   }, []);
 
-  const animPropsRight = useAnimatedProps(() => {
+  const animPropsPrevious = useAnimatedProps(() => {
     // useAnimatedProps broken on web: https://github.com/software-mansion/react-native-reanimated/issues/1808
-    if (isWeb) return { pointerEvents: "auto" as const };
+    // update: shouldn't be necessary anymore: https://github.com/software-mansion/react-native-reanimated/pull/1819
+    // if (isWeb) return { pointerEvents: "auto" as const };
     return {
       pointerEvents:
-        percentOpenRight.value > 0 ? ("auto" as const) : ("none" as const),
+        percentOpenPrevious.value > 0 ? ("auto" as const) : ("none" as const),
     };
   }, []);
 
   return (
     <OverlayContext.Provider value={overlayParams}>
-      <Animated.View
-        animatedProps={animPropsLeft}
-        style={[styles.underlay, leftStyle]}
-      >
-        <UnderlayContext.Provider value={underlayLeftParams}>
-          {renderUnderlayLeft(underlayLeftParams)}
-        </UnderlayContext.Provider>
+      {/* According to Moti docs (Reanimated-based), for web you should still separate `animatedProps` */}
+      {/* and animated `style` (or `animate` prop in Moti components) into separate nested components */}
+      <Animated.View animatedProps={animPropsNext}>
+        <Animated.View style={[styles.underlay, nextStyle]}>
+          <UnderlayContext.Provider value={underlayNextParams}>
+            {renderUnderlayNext(underlayNextParams)}
+          </UnderlayContext.Provider>
+        </Animated.View>
       </Animated.View>
-      <Animated.View
-        animatedProps={animPropsRight}
-        style={[styles.underlay, rightStyle]}
-      >
-        <UnderlayContext.Provider value={underlayRightParams}>
-          {renderUnderlayRight(underlayRightParams)}
-        </UnderlayContext.Provider>
+      {/* According to Moti docs (Reanimated-based), for web you should still separate `animatedProps` */}
+      {/* and animated `style` (or `animate` prop in Moti components) into separate nested components */}
+      <Animated.View animatedProps={animPropsPrevious}>
+        <Animated.View style={[styles.underlay, previousStyle]}>
+          <UnderlayContext.Provider value={underlayPreviousParams}>
+            {renderUnderlayPrevious(underlayPreviousParams)}
+          </UnderlayContext.Provider>
+        </Animated.View>
       </Animated.View>
       <GestureDetector gesture={gesture}>
         <Animated.View style={[styles.flex, overlayStyle]}>
@@ -457,79 +430,12 @@ function SwipeableItem<T>(
   );
 }
 
-export default React.forwardRef(SwipeableItem) as <T>(
-  props: Props<T> & { ref?: React.ForwardedRef<SwipeableItemImperativeRef> }
-) => React.ReactElement;
+// export * from "./hooks";
+// export * from "./shared"
+// export * from "./types";
 
-export function useUnderlayParams<T>() {
-  const underlayContext = useContext(UnderlayContext);
-  if (!underlayContext) {
-    throw new Error(
-      "useUnderlayParams must be called from within an UnderlayContext.Provider!"
-    );
+export default forwardRef(Swipeable) as <T>(
+  props: SwipeableProps<T> & {
+    ref?: ForwardedRef<SwipeableImperativeRef>;
   }
-  return underlayContext as UnderlayParams<T>;
-}
-
-export function useOverlayParams<T>() {
-  const overlayContext = useContext(OverlayContext);
-  if (!overlayContext) {
-    throw new Error(
-      "useOverlayParams must be called from within an OverlayContext.Provider!"
-    );
-  }
-  return overlayContext as OverlayParams<T>;
-}
-
-export function useSwipeableItemParams<T>() {
-  const overlayContext = useContext(OverlayContext) as
-    | OverlayParams<T>
-    | undefined;
-  if (!overlayContext) {
-    throw new Error(
-      "useSwipeableItemParams must be called from within an OverlayContext.Provider!"
-    );
-  }
-  const underlayContext = useContext(UnderlayContext);
-  const contextDirection = underlayContext?.direction;
-
-  const open = useCallback(
-    (snapPoint?: number, direction?: OpenDirection) => {
-      const openFnLeft = overlayContext.openLeft;
-      const openFnRight = overlayContext.openRight;
-      const openDirection = direction || contextDirection;
-      const openFn =
-        openDirection === OpenDirection.LEFT ? openFnLeft : openFnRight;
-      return openFn(snapPoint);
-    },
-    [overlayContext, contextDirection]
-  );
-
-  const percentOpen = useMemo(() => {
-    if (contextDirection) {
-      // If we're calling from within an underlay context, return the open percentage of that underlay
-      return contextDirection === OpenDirection.LEFT
-        ? overlayContext.percentOpenLeft
-        : overlayContext.percentOpenRight;
-    }
-    // Return the open percentage of the active swipe direction
-    return overlayContext.openDirection === OpenDirection.LEFT
-      ? overlayContext.percentOpenLeft
-      : overlayContext.percentOpenRight;
-  }, [overlayContext]);
-
-  return {
-    ...overlayContext,
-    open,
-    percentOpen,
-  };
-}
-
-const styles = StyleSheet.create({
-  underlay: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  flex: {
-    flex: 1,
-  },
-});
+) => ReactElement;

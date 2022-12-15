@@ -1,7 +1,7 @@
 {
-  "name": "react-native-swipeable-item",
-  "version": "2.0.9",
-  "description": "A horizontally swipeable flatlist row compatible with react-native-draggable-flatlist",
+  "name": "@onerouter/mars",
+  "version": "0.0.7",
+  "description": "A horizontally (RTL-aware when horizontal) or vertically swipeable row(/column) compatible with react-native-draggable-flatlist",
   "main": "lib/commonjs/index",
   "module": "lib/module/index",
   "react-native": "src/index.tsx",

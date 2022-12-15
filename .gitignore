@@ -1,2 +1,7 @@
 node_modules/**/*
 /lib
+/dist
+
+# for now, at least
+/.vscode
+/types
